@@ -1,7 +1,12 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Square, Activity, Wifi, Smartphone, Monitor } from 'lucide-react';
+import { Square, Activity, Wifi, Smartphone, Monitor, BarChart3, Network, TrendingUp, Clock } from 'lucide-react';
 import clsx from 'clsx';
+import { ActivityHeatmap } from './ActivityHeatmap';
+import { TimelineView } from './TimelineView';
+import { NetworkGraph } from './NetworkGraph';
+import { StatisticsPanel } from './StatisticsPanel';
+import { BehavioralInsightsPanel } from './BehavioralInsightsPanel';
 
 interface TrackerData {
     rtt: number;
@@ -31,6 +36,8 @@ interface ContactCardProps {
     privacyMode?: boolean;
 }
 
+type TabType = 'overview' | 'activity' | 'statistics' | 'network' | 'behavioral' | 'timeline';
+
 export function ContactCard({
     jid,
     displayNumber,
@@ -42,6 +49,21 @@ export function ContactCard({
     onRemove,
     privacyMode = false
 }: ContactCardProps) {
+    const [activeTab, setActiveTab] = useState<TabType>('overview');
+    const [sessionId, setSessionId] = useState<string | null>(null);
+
+    useEffect(() => {
+        // Fetch current session ID
+        fetch(`http://localhost:3001/api/sessions/${encodeURIComponent(jid)}?limit=1`)
+            .then(res => res.json())
+            .then(sessions => {
+                if (sessions.length > 0) {
+                    setSessionId(sessions[0].id);
+                }
+            })
+            .catch(err => console.error('Error fetching session:', err));
+    }, [jid]);
+
     const lastData = data[data.length - 1];
     const currentStatus = devices.length > 0
         ? (devices.find(d => d.state === 'OFFLINE')?.state ||
@@ -51,6 +73,15 @@ export function ContactCard({
 
     // Blur phone number in privacy mode
     const blurredNumber = privacyMode ? displayNumber.replace(/\d/g, '•') : displayNumber;
+
+    const tabs = [
+        { id: 'overview' as TabType, label: 'Overview', icon: Activity },
+        { id: 'activity' as TabType, label: 'Activity', icon: BarChart3 },
+        { id: 'statistics' as TabType, label: 'Statistics', icon: TrendingUp },
+        { id: 'network' as TabType, label: 'Network', icon: Network },
+        { id: 'behavioral' as TabType, label: 'Insights', icon: Clock },
+        { id: 'timeline' as TabType, label: 'Timeline', icon: Clock }
+    ];
 
     return (
         <div className="bg-gradient-to-br from-white to-gray-50 rounded-xl shadow-lg border border-gray-200 overflow-hidden">
@@ -146,40 +177,80 @@ export function ContactCard({
                         )}
                     </div>
 
-                    {/* Metrics & Chart */}
-                    <div className="md:col-span-2 space-y-6">
-                        {/* Metrics Grid */}
-                        <div className="grid grid-cols-3 gap-4">
-                            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
-                                <div className="text-sm text-gray-500 mb-1 flex items-center gap-1"><Activity size={16} /> Current Avg RTT</div>
-                                <div className="text-2xl font-bold text-gray-900">{lastData?.avg.toFixed(0) || '-'} ms</div>
-                            </div>
-                            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
-                                <div className="text-sm text-gray-500 mb-1">Median (50)</div>
-                                <div className="text-2xl font-bold text-gray-900">{lastData?.median.toFixed(0) || '-'} ms</div>
-                            </div>
-                            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
-                                <div className="text-sm text-gray-500 mb-1">Threshold</div>
-                                <div className="text-2xl font-bold text-blue-600">{lastData?.threshold.toFixed(0) || '-'} ms</div>
+                    {/* Analytics Tabs */}
+                    <div className="md:col-span-2">
+                        {/* Tab Navigation */}
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 mb-4">
+                            <div className="flex overflow-x-auto scrollbar-hide">
+                                {tabs.map(tab => {
+                                    const Icon = tab.icon;
+                                    return (
+                                        <button
+                                            key={tab.id}
+                                            onClick={() => setActiveTab(tab.id)}
+                                            className={clsx(
+                                                "flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors whitespace-nowrap border-b-2",
+                                                activeTab === tab.id
+                                                    ? "border-blue-600 text-blue-600 bg-blue-50"
+                                                    : "border-transparent text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+                                            )}
+                                        >
+                                            <Icon size={16} />
+                                            {tab.label}
+                                        </button>
+                                    );
+                                })}
                             </div>
                         </div>
 
-                        {/* Chart */}
-                        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 h-[300px]">
-                            <h5 className="text-sm font-medium text-gray-500 mb-4">RTT History & Threshold</h5>
-                            <ResponsiveContainer width="100%" height="100%">
-                                <LineChart data={data}>
-                                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
-                                    <XAxis dataKey="timestamp" hide />
-                                    <YAxis domain={['auto', 'auto']} />
-                                    <Tooltip
-                                        labelFormatter={(t: number) => new Date(t).toLocaleTimeString()}
-                                        contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                                    />
-                                    <Line type="monotone" dataKey="avg" stroke="#3b82f6" strokeWidth={2} dot={false} name="Avg RTT" isAnimationActive={false} />
-                                    <Line type="step" dataKey="threshold" stroke="#ef4444" strokeDasharray="5 5" dot={false} name="Threshold" isAnimationActive={false} />
-                                </LineChart>
-                            </ResponsiveContainer>
+                        {/* Tab Content */}
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 min-h-[400px]">
+                            {activeTab === 'overview' && (
+                                <div className="space-y-6">
+                                    {/* Metrics Grid */}
+                                    <div className="grid grid-cols-3 gap-4">
+                                        <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                                            <div className="text-sm text-gray-500 mb-1 flex items-center gap-1"><Activity size={16} /> Current Avg RTT</div>
+                                            <div className="text-2xl font-bold text-gray-900">{lastData?.avg.toFixed(0) || '-'} ms</div>
+                                        </div>
+                                        <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                                            <div className="text-sm text-gray-500 mb-1">Median (50)</div>
+                                            <div className="text-2xl font-bold text-gray-900">{lastData?.median.toFixed(0) || '-'} ms</div>
+                                        </div>
+                                        <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                                            <div className="text-sm text-gray-500 mb-1">Threshold</div>
+                                            <div className="text-2xl font-bold text-blue-600">{lastData?.threshold.toFixed(0) || '-'} ms</div>
+                                        </div>
+                                    </div>
+
+                                    {/* Chart */}
+                                    <div className="h-[300px]">
+                                        <h5 className="text-sm font-medium text-gray-500 mb-4">RTT History & Threshold</h5>
+                                        <ResponsiveContainer width="100%" height="100%">
+                                            <LineChart data={data}>
+                                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
+                                                <XAxis dataKey="timestamp" hide />
+                                                <YAxis domain={['auto', 'auto']} />
+                                                <Tooltip
+                                                    labelFormatter={(t: number) => new Date(t).toLocaleTimeString()}
+                                                    contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                                                />
+                                                <Line type="monotone" dataKey="avg" stroke="#3b82f6" strokeWidth={2} dot={false} name="Avg RTT" isAnimationActive={false} />
+                                                <Line type="step" dataKey="threshold" stroke="#ef4444" strokeDasharray="5 5" dot={false} name="Threshold" isAnimationActive={false} />
+                                            </LineChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </div>
+                            )}
+
+                            {activeTab === 'activity' && <ActivityHeatmap jid={jid} />}
+                            {activeTab === 'statistics' && <StatisticsPanel jid={jid} />}
+                            {activeTab === 'network' && <NetworkGraph jid={jid} />}
+                            {activeTab === 'behavioral' && <BehavioralInsightsPanel jid={jid} />}
+                            {activeTab === 'timeline' && sessionId && <TimelineView sessionId={sessionId} />}
+                            {activeTab === 'timeline' && !sessionId && (
+                                <div className="text-center text-gray-500 py-8">Loading session data...</div>
+                            )}
                         </div>
                     </div>
                 </div>

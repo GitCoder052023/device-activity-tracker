@@ -15,9 +15,15 @@ import makeWASocket, { DisconnectReason, useMultiFileAuthState } from '@whiskeys
 import { pino } from 'pino';
 import { Boom } from '@hapi/boom';
 import { WhatsAppTracker } from './tracker';
+import { getDatabase } from './database/database';
+import { AnalyticsEngine } from './analytics/analytics';
+import { NetworkIntelligence } from './analytics/networkIntelligence';
 
 const app = express();
 app.use(cors());
+app.use(express.json());
+
+const db = getDatabase();
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
@@ -148,6 +154,144 @@ io.on('connection', (socket) => {
             socket.emit('contact-removed', jid);
         }
     });
+});
+
+// Analytics API Endpoints
+app.get('/api/analytics/activity-patterns/:jid', (req, res) => {
+    try {
+        const { jid } = req.params;
+        const { startTime, endTime } = req.query;
+        
+        const start = startTime ? parseInt(startTime as string) : undefined;
+        const end = endTime ? parseInt(endTime as string) : undefined;
+        
+        const measurements = db.getMeasurementsByJid(jid, start, end);
+        const patterns = AnalyticsEngine.analyzeActivityPatterns(measurements);
+        
+        res.json(patterns);
+    } catch (error: any) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/analytics/statistics/:jid', (req, res) => {
+    try {
+        const { jid } = req.params;
+        const { startTime, endTime } = req.query;
+        
+        const start = startTime ? parseInt(startTime as string) : undefined;
+        const end = endTime ? parseInt(endTime as string) : undefined;
+        
+        const measurements = db.getMeasurementsByJid(jid, start, end);
+        const sessions = db.getSessions(jid);
+        
+        // Get transitions for all sessions
+        const allTransitions = sessions.flatMap(session => db.getTransitions(session.id));
+        
+        const statistics = AnalyticsEngine.performStatisticalAnalysis(measurements, allTransitions);
+        
+        res.json(statistics);
+    } catch (error: any) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/analytics/behavioral-insights/:jid', (req, res) => {
+    try {
+        const { jid } = req.params;
+        const sessions = db.getSessions(jid, 1);
+        
+        if (sessions.length === 0) {
+            return res.json({
+                averageSessionLength: 0,
+                peakActivityTimes: [],
+                sleepWakeDetection: { sleepPatternDetected: false },
+                deviceUsagePatterns: [],
+                multiDeviceCoordination: { simultaneousDevices: 0, avgSimultaneousDevices: 0, coordinationScore: 0 },
+                responseTimePatterns: { avgResponseTime: 0, fastestResponseTime: 0, slowestResponseTime: 0, responseTimeConsistency: 0 }
+            });
+        }
+        
+        const session = sessions[0];
+        const measurements = db.getMeasurements(session.id);
+        const transitions = db.getTransitions(session.id);
+        
+        const insights = AnalyticsEngine.generateBehavioralInsights(
+            measurements,
+            transitions,
+            session.startTime,
+            session.endTime
+        );
+        
+        res.json(insights);
+    } catch (error: any) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/analytics/network-analysis/:jid', (req, res) => {
+    try {
+        const { jid } = req.params;
+        const { startTime, endTime } = req.query;
+        
+        const start = startTime ? parseInt(startTime as string) : undefined;
+        const end = endTime ? parseInt(endTime as string) : undefined;
+        
+        const measurements = db.getMeasurementsByJid(jid, start, end);
+        const rttHistory = measurements.map(m => m.rtt);
+        
+        const analysis = NetworkIntelligence.analyzeNetwork(rttHistory, measurements.length);
+        
+        res.json(analysis);
+    } catch (error: any) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/sessions/:jid', (req, res) => {
+    try {
+        const { jid } = req.params;
+        const { limit } = req.query;
+        const sessions = db.getSessions(jid, limit ? parseInt(limit as string) : 100);
+        res.json(sessions);
+    } catch (error: any) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/measurements/:sessionId', (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        const { startTime, endTime } = req.query;
+        
+        const start = startTime ? parseInt(startTime as string) : undefined;
+        const end = endTime ? parseInt(endTime as string) : undefined;
+        
+        const measurements = db.getMeasurements(sessionId, start, end);
+        res.json(measurements);
+    } catch (error: any) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/transitions/:sessionId', (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        const transitions = db.getTransitions(sessionId);
+        res.json(transitions);
+    } catch (error: any) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/devices/:sessionId', (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        const devices = db.getDevices(sessionId);
+        res.json(devices);
+    } catch (error: any) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 const PORT = 3001;

@@ -1,6 +1,9 @@
 import '@whiskeysockets/baileys';
 import { WASocket, proto } from '@whiskeysockets/baileys';
 import { pino } from 'pino';
+import { getDatabase } from './database/database';
+import { TrackingSession, RTTMeasurement, StateTransition, DeviceInfo } from './database/models';
+import { NetworkIntelligence } from './analytics/networkIntelligence';
 
 // Suppress Baileys debug output (Closing session spam)
 const logger = pino({
@@ -96,6 +99,11 @@ export class WhatsAppTracker {
     private probeStartTimes: Map<string, number> = new Map();
     private probeTimeouts: Map<string, NodeJS.Timeout> = new Map();
     private lastPresence: string | null = null;
+    private db = getDatabase();
+    private sessionId: string;
+    private sessionStartTime: number;
+    private previousStates: Map<string, string> = new Map(); // Track state transitions
+    private totalProbes: number = 0;
     public onUpdate?: (data: any) => void;
 
     constructor(sock: WASocket, targetJid: string, debugMode: boolean = false) {
@@ -103,6 +111,10 @@ export class WhatsAppTracker {
         this.targetJid = targetJid;
         this.trackedJids.add(targetJid);
         trackerLogger.setDebugMode(debugMode);
+        
+        // Create new tracking session
+        this.sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        this.sessionStartTime = Date.now();
     }
 
     /**
@@ -113,6 +125,16 @@ export class WhatsAppTracker {
         if (this.isTracking) return;
         this.isTracking = true;
         trackerLogger.info(`\n✅ Tracking started for ${this.targetJid}\n`);
+
+        // Create database session
+        const session: TrackingSession = {
+            id: this.sessionId,
+            jid: this.targetJid,
+            startTime: this.sessionStartTime,
+            isActive: true,
+            createdAt: Date.now()
+        };
+        this.db.createSession(session);
 
         // Listen for message updates (receipts)
         this.sock.ev.on('messages.update', (updates) => {
@@ -214,6 +236,7 @@ export class WhatsAppTracker {
             trackerLogger.debug(`[PROBE] Sending probe with reaction "${randomReaction}" to non-existent message ${randomMsgId}`);
             const result = await this.sock.sendMessage(this.targetJid, reactionMessage);
             const startTime = Date.now();
+            this.totalProbes++;
 
             if (result?.key?.id) {
                 trackerLogger.debug(`[PROBE] Probe sent successfully, message ID: ${result.key.id}`);
@@ -366,9 +389,11 @@ export class WhatsAppTracker {
                 lastRtt: rtt,
                 lastUpdate: Date.now()
             });
+            this.previousStates.set(jid, 'Calibrating...');
         }
 
         const metrics = this.deviceMetrics.get(jid)!;
+        const previousState = this.previousStates.get(jid) || 'Calibrating...';
 
         // Only add measurements if we actually received a CLIENT ACK (rtt <= 5000ms)
         if (rtt <= 5000) {
@@ -394,7 +419,59 @@ export class WhatsAppTracker {
             metrics.lastUpdate = Date.now();
 
             // Determine new state based on RTT
+            const oldState = metrics.state;
             this.determineDeviceState(jid);
+
+            // Save measurement to database
+            const globalMedian = this.calculateGlobalMedian();
+            const globalThreshold = globalMedian * 0.9;
+            const movingAvg = metrics.recentRtts.length > 0
+                ? metrics.recentRtts.reduce((a: number, b: number) => a + b, 0) / metrics.recentRtts.length
+                : rtt;
+
+            // Network intelligence analysis
+            const networkAnalysis = NetworkIntelligence.analyzeNetwork(metrics.rttHistory, this.totalProbes);
+
+            const measurement: RTTMeasurement = {
+                sessionId: this.sessionId,
+                jid: this.targetJid,
+                deviceJid: jid,
+                rtt,
+                timestamp: Date.now(),
+                state: metrics.state as any,
+                networkType: networkAnalysis.networkType,
+                networkQuality: networkAnalysis.networkQuality,
+                avgRtt: movingAvg,
+                medianRtt: globalMedian,
+                threshold: globalThreshold
+            };
+            this.db.insertMeasurement(measurement);
+
+            // Track state transitions
+            if (oldState !== metrics.state) {
+                const transition: StateTransition = {
+                    sessionId: this.sessionId,
+                    jid: this.targetJid,
+                    deviceJid: jid,
+                    fromState: oldState,
+                    toState: metrics.state,
+                    timestamp: Date.now(),
+                    duration: previousState === oldState ? Date.now() - metrics.lastUpdate : undefined
+                };
+                this.db.insertTransition(transition);
+                this.previousStates.set(jid, metrics.state);
+            }
+
+            // Update device info
+            const deviceInfo: DeviceInfo = {
+                sessionId: this.sessionId,
+                jid: this.targetJid,
+                deviceJid: jid,
+                firstSeen: metrics.rttHistory.length === 1 ? Date.now() : (this.db.getDevices(this.sessionId).find(d => d.deviceJid === jid)?.firstSeen || Date.now()),
+                lastSeen: Date.now(),
+                totalMeasurements: metrics.rttHistory.length
+            };
+            this.db.upsertDevice(deviceInfo);
         }
         // If rtt > 5000ms, it means timeout - device is already marked as OFFLINE by markDeviceOffline()
 
@@ -514,6 +591,12 @@ export class WhatsAppTracker {
      */
     public stopTracking() {
         this.isTracking = false;
+
+        // Update session end time
+        this.db.updateSession(this.sessionId, {
+            endTime: Date.now(),
+            isActive: false
+        });
 
         // Clear all pending timeouts
         for (const timeoutId of this.probeTimeouts.values()) {

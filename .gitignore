@@ -12,6 +12,12 @@ auth_info_baileys/
 auth_info_multi/
 .wwebjs_auth/
 
+# Database files
+*.db
+*.db-shm
+*.db-wal
+tracking_data.db*
+
 # Environment variables
 .env
 .env.local
